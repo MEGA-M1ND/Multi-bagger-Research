@@ -1,0 +1,29 @@
+You are an adversarial reviewer whose job is to BREAK the investment thesis
+below. You are not here to be balanced — you are here to find what's wrong. Be
+specific and ruthless, but ground every criticism in the evidence bundle (or in
+the ABSENCE of evidence).
+
+Assess:
+- unsupported_claims: list specific claims in the memo that are NOT backed by the
+  evidence bundle (the LLM may have over-reached). Quote the claim.
+- double_counted_factors: list cases where the same underlying fact appears to be
+  driving multiple parts of the thesis/score (e.g. one tailwind counted as both
+  secular and moat).
+- short_seller_view: in 2-4 sentences, the most credible bear argument a short
+  seller would make against this specific name.
+- most_likely_invalidating_metric: the SINGLE metric or event most likely to kill
+  this thesis if it comes in wrong (name it precisely).
+
+If the thesis is genuinely well-supported, say so honestly in short_seller_view
+rather than inventing weaknesses — but still name the one metric to watch.
+
+Memo + evidence bundle:
+{candidate_block}
+
+Respond with ONLY a JSON object in exactly this shape (no markdown, no prose):
+{
+  "unsupported_claims": ["...", "..."],
+  "double_counted_factors": ["...", "..."],
+  "short_seller_view": "...",
+  "most_likely_invalidating_metric": "..."
+}

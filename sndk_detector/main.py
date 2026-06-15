@@ -44,9 +44,9 @@ async def run_once(config: Config, graph) -> AgentState:
 
 
 def _print_summary(state: AgentState) -> None:
-    """Print a clear, observable run summary."""
+    """Print a clear, observable run summary (v2: tiered, 0-100)."""
     candidates = state.get("candidates", [])
-    scored = state.get("scored_candidates", [])
+    scored = state.get("decided_candidates", []) or state.get("scored_candidates", [])
     alerted = state.get("alert_queue", [])
     errors = state.get("errors", [])
 
@@ -54,6 +54,15 @@ def _print_summary(state: AgentState) -> None:
     by_source: dict[str, int] = {}
     for cand in candidates:
         by_source[cand.get("source", "?")] = by_source.get(cand.get("source", "?"), 0) + 1
+
+    # Tier + hard-fail counts.
+    tiers = {"starter": 0, "deep_dive": 0, "watchlist": 0, "reject": 0}
+    hard_fails = 0
+    for cand in scored:
+        sc = cand.get("scorecard") or {}
+        tiers[sc.get("tier", "reject")] = tiers.get(sc.get("tier", "reject"), 0) + 1
+        if sc.get("hard_fail"):
+            hard_fails += 1
 
     print("\n" + "=" * 60)
     print("SNDK DETECTOR — RUN SUMMARY")
@@ -63,22 +72,27 @@ def _print_summary(state: AgentState) -> None:
     if by_source:
         for source, count in sorted(by_source.items()):
             print(f"                - {source}: {count}")
-    print(f"Scored        : {len(scored)} (newly scored this run)")
-    print(f"Alerted       : {len(alerted)}")
+    print(f"Scored        : {len(scored)} (spinoffs evaluated this run)")
+    print(
+        f"Tiers         : starter={tiers['starter']} deep_dive={tiers['deep_dive']} "
+        f"watchlist={tiers['watchlist']} reject={tiers['reject']}"
+    )
+    print(f"Hard fails    : {hard_fails}")
+    print(f"Alerted       : {len(alerted)} (deep_dive/starter only)")
 
     if scored:
         print("\nTop scored:")
         ranked = sorted(
             scored,
-            key=lambda c: (c.get("blueprint") or {}).get("total_score", 0),
+            key=lambda c: (c.get("scorecard") or {}).get("total_score", 0),
             reverse=True,
         )
         for cand in ranked[:10]:
-            bp = cand.get("blueprint") or {}
-            flag = "🔔" if cand.get("alerted") else "  "
+            sc = cand.get("scorecard") or {}
+            flag = "🔔" if cand.get("alerted") else ("✗" if sc.get("hard_fail") else "  ")
             print(
-                f"  {flag} {bp.get('total_score', 0)}/6  "
-                f"{cand.get('ticker'):<10} {cand.get('company_name', '')[:40]}"
+                f"  {flag} {sc.get('total_score', 0):>3}/100  {sc.get('tier','?'):<10} "
+                f"{cand.get('ticker'):<10} {cand.get('company_name', '')[:36]}"
             )
 
     print(f"\nErrors        : {len(errors)}")

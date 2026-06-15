@@ -53,9 +53,12 @@ If you can reach SEC and the shape differs, paste a sample response and adjust
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
+from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from typing import List, Optional, Tuple
 
 import requests
@@ -67,10 +70,28 @@ logger = logging.getLogger(__name__)
 
 SEC_FTS_URL = "https://efts.sec.gov/LATEST/search-index"
 
-# Structural-event language -> the blueprint's STRUCTURAL_EVENT factor. We OR a
-# few queries so we cast a reasonably wide net for re-rating catalysts.
-SEC_QUERIES = ('"spin-off"', '"carve-out"', '"separation of"')
-SEC_FORMS = "8-K,S-1,10-12B"
+# Only look at filings from the last N days — keeps candidates current.
+_LOOKBACK_DAYS = 60
+# Max hits to accept per query so every query group gets a fair share of the
+# overall MAX_CANDIDATES_PER_SOURCE cap (instead of the first query eating it).
+_MAX_PER_QUERY = 5
+
+# v2 SPINOFF VERTICAL SLICE: this ingestion is now scoped to ONE event family —
+# spinoffs / carve-outs. Every query is spinoff-distribution language; the forms
+# are the ones that announce or register a separation. Other event families
+# (activist, recap, etc.) come in a later phase.
+SEC_QUERIES = (
+    '"spin-off"',
+    '"spinoff"',
+    '"carve-out"',
+    '"separation of"',
+    '"information statement"',
+    '"pro rata distribution"',
+    '"distribution of"',
+)
+# 10-12B = registration of a spun entity's securities (the canonical spinoff
+# form); 8-K announces the separation; S-1 covers carve-out IPOs.
+SEC_FORMS = "10-12B,8-K,S-1"
 
 # SEC asks for <= 10 requests/sec. We make very few requests, but be polite.
 _MIN_INTERVAL_SEC = 0.12
@@ -78,6 +99,102 @@ _REQUEST_TIMEOUT = 20
 
 # Pull "TICKER" out of an EDGAR display name like "Acme Corp (ACME) (CIK 000...)".
 _TICKER_RE = re.compile(r"\(([A-Z0-9.\-]{1,8})\)")
+
+# Max chars to keep from a fetched filing — enough context without flooding the LLM.
+_FILING_SNIPPET_CHARS = 2500
+
+
+class _TextExtractor(HTMLParser):
+    """Minimal HTML-to-text stripper using stdlib only."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+        self._skip = False
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag in ("script", "style"):
+            self._skip = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("script", "style"):
+            self._skip = False
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip:
+            text = data.strip()
+            if text:
+                self._parts.append(text)
+
+    def get_text(self) -> str:
+        return " ".join(self._parts)
+
+
+def _strip_html(raw: str) -> str:
+    parser = _TextExtractor()
+    try:
+        parser.feed(raw)
+    except Exception:
+        pass
+    return parser.get_text()
+
+
+def _source_id(accession: str, filename: str) -> str:
+    """Stable id for a source document (matches db.upsert_source_document)."""
+    return hashlib.sha256(f"{accession}:{filename}".encode("utf-8")).hexdigest()[:16]
+
+
+def _build_source_document(hit: dict, headers: dict) -> Optional[dict]:
+    """Fetch a filing's opening text + provenance metadata.
+
+    Returns a source_document dict (source_id, cik, form, accession, filename,
+    url, file_date, fetched_text) or None on any failure. Non-fatal by design —
+    a missing doc doesn't break the pipeline, it just leaves less evidence.
+    """
+    hit_id = hit.get("_id") or ""
+    parts = hit_id.split(":", 1)
+    if len(parts) < 2 or not parts[1]:
+        return None
+    accession, filename = parts[0], parts[1]
+    # Skip index pages — they contain links, not filing content
+    if "index" in filename.lower():
+        return None
+
+    source_doc = (hit.get("_source") or {})
+    ciks = source_doc.get("ciks") or []
+    if not ciks:
+        return None
+
+    cik_int = str(int(ciks[0]))  # strip leading zeros
+    accession_nodashes = accession.replace("-", "")
+    url = (
+        f"https://www.sec.gov/Archives/edgar/data/"
+        f"{cik_int}/{accession_nodashes}/{filename}"
+    )
+    fetched_text = None
+    try:
+        time.sleep(_MIN_INTERVAL_SEC)
+        resp = requests.get(url, headers=headers, timeout=_REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "")
+        if "html" in content_type or filename.endswith((".htm", ".html")):
+            text = _strip_html(resp.text)
+        else:
+            text = resp.text
+        fetched_text = text[:_FILING_SNIPPET_CHARS].strip() or None
+    except Exception:
+        fetched_text = None
+
+    return {
+        "source_id": _source_id(accession, filename),
+        "cik": str(ciks[0]),
+        "form": source_doc.get("form") or source_doc.get("file_type"),
+        "accession": accession,
+        "filename": filename,
+        "url": url,
+        "file_date": source_doc.get("file_date"),
+        "fetched_text": fetched_text,
+    }
 
 
 def _polite_get(url: str, params: dict, headers: dict) -> requests.Response:
@@ -151,13 +268,17 @@ def _extract_candidate(hit: dict, query: str) -> Optional[Candidate]:
         "display_name": display_names[0],
     }
 
-    return new_candidate(
+    cand = new_candidate(
         ticker=ticker,
         company_name=company or ticker,
         market="US",
         source="sec_edgar",
         raw_data=raw,
     )
+    # v2: carry the CIK as first-class identity (normalize/extract rely on it).
+    if ciks:
+        cand["cik"] = str(ciks[0])
+    return cand
 
 
 def fetch_sec_candidates(config: Config) -> Tuple[List[Candidate], List[str]]:
@@ -176,10 +297,20 @@ def fetch_sec_candidates(config: Config) -> Tuple[List[Candidate], List[str]]:
     errors: List[str] = []
     seen_ids: set[str] = set()
 
+    now = datetime.now(timezone.utc)
+    start_dt = (now - timedelta(days=_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    end_dt = now.strftime("%Y-%m-%d")
+
     for query in SEC_QUERIES:
         if len(candidates) >= config.max_candidates_per_source:
             break
-        params = {"q": query, "forms": SEC_FORMS}
+        params = {
+            "q": query,
+            "forms": SEC_FORMS,
+            "dateRange": "custom",
+            "startdt": start_dt,
+            "enddt": end_dt,
+        }
         try:
             resp = _polite_get(SEC_FTS_URL, params, headers)
             payload = resp.json()
@@ -193,8 +324,11 @@ def fetch_sec_candidates(config: Config) -> Tuple[List[Candidate], List[str]]:
         _warn_if_unexpected_shape(payload, errors)
         hits = (((payload or {}).get("hits") or {}).get("hits")) or []
 
+        query_count = 0
         for hit in hits:
             if len(candidates) >= config.max_candidates_per_source:
+                break
+            if query_count >= _MAX_PER_QUERY:
                 break
             try:
                 cand = _extract_candidate(hit, query)
@@ -207,7 +341,18 @@ def fetch_sec_candidates(config: Config) -> Tuple[List[Candidate], List[str]]:
             if cand["candidate_id"] in seen_ids:
                 continue
             seen_ids.add(cand["candidate_id"])
+            # Build the source_document (provenance + filing text). normalize
+            # persists it to the DB; extract_evidence reads its fetched_text.
+            doc = _build_source_document(hit, headers)
+            if doc:
+                raw = cand.get("raw_data") or {}
+                raw["source_documents"] = [doc]
+                # Keep filing_text top-level for back-compat with current scorer.
+                if doc.get("fetched_text"):
+                    raw["filing_text"] = doc["fetched_text"]
+                cand["raw_data"] = raw
             candidates.append(cand)
+            query_count += 1
 
     return candidates, errors
 

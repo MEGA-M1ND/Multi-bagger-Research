@@ -1,8 +1,11 @@
-"""Alert node: filter to high-scoring, not-yet-alerted candidates and notify.
+"""Alert node: notify on the highest-conviction names only.
 
-Filter rule: alert a candidate iff
-  * it has a blueprint AND total_score >= BLUEPRINT_THRESHOLD, AND
+v2 filter rule: alert a candidate iff
+  * its tier is 'deep_dive' or 'starter' (the only tiers worth interrupting for), AND
   * we have not already alerted on it (checked against the DB by candidate_id).
+
+This is a deliberate shift from v1's "any score >= threshold" — most scored names
+land in reject/watchlist and live in the files, not your phone.
 
 Delivery is Telegram (Markdown). Send failures are caught and recorded; we only
 ``mark_as_alerted`` after a confirmed successful send, so a failed send is retried
@@ -28,14 +31,8 @@ _REQUEST_TIMEOUT = 20
 # Telegram messages cap at 4096 chars; leave headroom for Markdown overhead.
 _MAX_MESSAGE_LEN = 3800
 
-_FACTOR_LABELS = {
-    "structural_event": "Structural event",
-    "cyclical_trough": "Cyclical trough",
-    "secular_tailwind": "Secular tailwind",
-    "supply_constraint": "Supply constraint",
-    "undervalued_narrative": "Undervalued narrative",
-    "domain_edge": "Domain edge",
-}
+# Tiers that earn a push notification.
+_ALERT_TIERS = ("deep_dive", "starter")
 
 
 def _escape_md(text: str) -> str:
@@ -45,30 +42,35 @@ def _escape_md(text: str) -> str:
     return text
 
 
-def format_alert(candidate: Candidate, threshold: int) -> str:
-    """Render a candidate into a Telegram Markdown message."""
-    bp = candidate.get("blueprint") or {}
+def format_alert(candidate: Candidate) -> str:
+    """Render a candidate into a Telegram Markdown message (v2: score/100 + tier)."""
+    sc = candidate.get("scorecard") or {}
+    memo = candidate.get("memo") or {}
+    critic = candidate.get("critic") or {}
+
     ticker = _escape_md(str(candidate.get("ticker", "?")))
     name = _escape_md(str(candidate.get("company_name", "")))
-    score = bp.get("total_score", 0)
+    total = sc.get("total_score", 0)
+    tier = _escape_md(str(sc.get("tier", "?")))
 
     lines = [
-        f"*SNDK Match: {ticker}* — {name}",
-        f"Score: *{score}/6* (threshold {threshold}) · "
-        f"{_escape_md(str(candidate.get('market', '?')))} · "
-        f"{_escape_md(str(candidate.get('source', '?')))}",
+        f"*SNDK {tier.upper()}: {ticker}* — {name}",
+        f"Score: *{total}/100* · {_escape_md(str(candidate.get('event_family', '?')))} · "
+        f"{_escape_md(str(candidate.get('market', '?')))}",
         "",
-        "*Blueprint:*",
+        "*Subscores:*",
+        f"event {sc.get('event_quality',0)} · cycle {sc.get('cycle_position',0)} · "
+        f"tailwind {sc.get('secular_tailwind',0)} · moat {sc.get('moat_proxies',0)} · "
+        f"valuation {sc.get('valuation_dislocation',0)} · survivability {sc.get('survivability',0)}",
     ]
-    for key, label in _FACTOR_LABELS.items():
-        mark = "✅" if bp.get(key) else "▫️"
-        lines.append(f"{mark} {label}")
 
-    thesis = candidate.get("thesis")
-    if thesis:
-        lines += ["", "*Thesis:*", _escape_md(thesis.strip())]
-    elif bp.get("reasoning"):
-        lines += ["", "*Reasoning:*", _escape_md(str(bp["reasoning"]).strip())]
+    if memo.get("why_now"):
+        lines += ["", "*Why now:*", _escape_md(str(memo["why_now"]).strip())]
+    if memo.get("why_mispriced"):
+        lines += ["", "*Why mispriced:*", _escape_md(str(memo["why_mispriced"]).strip())]
+    if critic.get("most_likely_invalidating_metric"):
+        lines += ["", "*Watch (kill metric):*",
+                  _escape_md(str(critic["most_likely_invalidating_metric"]).strip())]
 
     message = "\n".join(lines)
     if len(message) > _MAX_MESSAGE_LEN:
@@ -95,12 +97,12 @@ def _send_telegram(config: Config, message: str) -> Tuple[bool, str]:
     return False, f"telegram returned {resp.status_code}: {resp.text[:200]}"
 
 
-def select_alertable(config: Config, scored: List[Candidate]) -> List[Candidate]:
-    """Filter scored candidates down to those we should alert on."""
+def select_alertable(config: Config, decided: List[Candidate]) -> List[Candidate]:
+    """Filter to deep_dive/starter tier candidates not yet alerted."""
     queue: List[Candidate] = []
-    for cand in scored:
-        bp = cand.get("blueprint")
-        if not bp or bp.get("total_score", 0) < config.blueprint_threshold:
+    for cand in decided:
+        tier = (cand.get("scorecard") or {}).get("tier")
+        if tier not in _ALERT_TIERS:
             continue
         if has_been_alerted(config.db_path, cand["candidate_id"]):
             continue
@@ -109,15 +111,15 @@ def select_alertable(config: Config, scored: List[Candidate]) -> List[Candidate]
 
 
 def run_alerts(
-    config: Config, scored: List[Candidate]
+    config: Config, decided: List[Candidate]
 ) -> Tuple[List[Candidate], List[str]]:
     """Send alerts for qualifying candidates. Returns (alerted, errors)."""
-    queue = select_alertable(config, scored)
+    queue = select_alertable(config, decided)
     alerted: List[Candidate] = []
     errors: List[str] = []
 
     for cand in queue:
-        message = format_alert(cand, config.blueprint_threshold)
+        message = format_alert(cand)
         ok, detail = _send_telegram(config, message)
         if ok:
             cand["alerted"] = True
@@ -139,7 +141,7 @@ def make_alert_node(config: Config):
     """Factory: returns a graph node that closes over ``config``."""
 
     def _node(state: dict) -> dict:
-        alerted, errors = run_alerts(config, state.get("scored_candidates", []))
+        alerted, errors = run_alerts(config, state.get("decided_candidates", []))
         return {"alert_queue": alerted, "errors": errors}
 
     return _node

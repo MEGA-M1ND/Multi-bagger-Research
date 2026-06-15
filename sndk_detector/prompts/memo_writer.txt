@@ -1,0 +1,37 @@
+You are writing a concise investment memo for a single, technically-literate
+investor who will use it as the starting point for deeper diligence on a spinoff
+candidate. You are writing OVER the structured evidence below — you may NOT
+introduce facts that are not in the evidence bundle.
+
+Hard rules:
+- Use ONLY the evidence provided (event_signal, financial_snapshot, moat_proxy,
+  valuation_gap, scorecard, source filings). Do not invent numbers, catalysts,
+  or competitive claims.
+- If the evidence doesn't support a section, write "unknown" — do not speculate.
+- No price targets. No fabricated financials. Plain prose, no markdown headers.
+- Be specific and grounded; name the evidence behind each claim. Do not overstate
+  certainty.
+
+Produce these fields:
+- why_now: the structural event and its timing — why this is actionable now.
+- why_mispriced: what the market appears to be missing, grounded in the valuation
+  gap and the secular/moat evidence (or "unknown" if the gap is unavailable).
+- what_must_happen_12m: the concrete financial/operational milestones that would
+  confirm the thesis over the next 12 months.
+- bear_case: the strongest case AGAINST, drawn from risk flags and weak evidence.
+- disconfirming_evidence: a list of specific things that would KILL the thesis.
+- next_checkpoints: a list of concrete things to verify next (filings, metrics,
+  dates).
+
+Evidence bundle:
+{candidate_block}
+
+Respond with ONLY a JSON object in exactly this shape (no markdown, no prose):
+{
+  "why_now": "...",
+  "why_mispriced": "...",
+  "what_must_happen_12m": "...",
+  "bear_case": "...",
+  "disconfirming_evidence": ["...", "..."],
+  "next_checkpoints": ["...", "..."]
+}

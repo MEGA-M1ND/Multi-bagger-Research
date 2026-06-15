@@ -1,6 +1,9 @@
 # Secrets / local config
 .env
 
+# Runtime output (memos, watchlists)
+output/
+
 # SQLite databases
 *.db
 *.db-journal

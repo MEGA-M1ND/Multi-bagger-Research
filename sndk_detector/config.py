@@ -31,12 +31,19 @@ class Config:
     openai_model: str
     telegram_bot_token: str
     telegram_chat_id: str
-    blueprint_threshold: int
     dedup_lookback_days: int
     max_candidates_per_source: int
     max_concurrent_llm: int
     db_path: str
     sec_user_agent: str
+    finnhub_api_key: str  # empty string means disabled
+    # v2 tiering (0-100). A candidate routes to the highest tier it clears.
+    tier_watchlist: int
+    tier_deep_dive: int
+    tier_starter: int
+    output_dir: str
+    scorer_version: str
+    extractor_version: str
 
 
 def _get_int(name: str, default: int) -> int:
@@ -59,20 +66,24 @@ def load_config() -> Config:
             + ".\nCopy .env.example to .env and fill them in."
         )
 
-    threshold = _get_int("BLUEPRINT_THRESHOLD", 4)
-    if not 0 <= threshold <= 6:
-        raise ConfigError(f"BLUEPRINT_THRESHOLD must be between 0 and 6, got {threshold}")
-
     max_concurrent = _get_int("MAX_CONCURRENT_LLM", 5)
     if max_concurrent < 1:
         raise ConfigError(f"MAX_CONCURRENT_LLM must be >= 1, got {max_concurrent}")
+
+    tier_watchlist = _get_int("TIER_WATCHLIST", 40)
+    tier_deep_dive = _get_int("TIER_DEEP_DIVE", 60)
+    tier_starter = _get_int("TIER_STARTER", 75)
+    if not (0 <= tier_watchlist <= tier_deep_dive <= tier_starter <= 100):
+        raise ConfigError(
+            "Tier thresholds must satisfy 0 <= TIER_WATCHLIST <= TIER_DEEP_DIVE "
+            f"<= TIER_STARTER <= 100, got {tier_watchlist}/{tier_deep_dive}/{tier_starter}"
+        )
 
     return Config(
         openai_api_key=os.environ["OPENAI_API_KEY"].strip(),
         openai_model=(os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip(),
         telegram_bot_token=os.environ["TELEGRAM_BOT_TOKEN"].strip(),
         telegram_chat_id=os.environ["TELEGRAM_CHAT_ID"].strip(),
-        blueprint_threshold=threshold,
         dedup_lookback_days=_get_int("DEDUP_LOOKBACK_DAYS", 7),
         max_candidates_per_source=_get_int("MAX_CANDIDATES_PER_SOURCE", 20),
         max_concurrent_llm=max_concurrent,
@@ -80,4 +91,11 @@ def load_config() -> Config:
         sec_user_agent=(
             os.getenv("SEC_USER_AGENT") or "SNDK Detector contact@example.com"
         ).strip(),
+        finnhub_api_key=(os.getenv("FINNHUB_API_KEY") or "").strip(),
+        tier_watchlist=tier_watchlist,
+        tier_deep_dive=tier_deep_dive,
+        tier_starter=tier_starter,
+        output_dir=(os.getenv("OUTPUT_DIR") or "./output").strip(),
+        scorer_version=(os.getenv("SCORER_VERSION") or "v1").strip(),
+        extractor_version=(os.getenv("EXTRACTOR_VERSION") or "v1").strip(),
     )

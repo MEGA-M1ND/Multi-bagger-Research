@@ -47,12 +47,30 @@ class Candidate(TypedDict, total=False):
     raw_data: dict  # source-specific payload, kept for auditing/observability
     candidate_id: str  # stable hash of ticker+source, used for dedup/idempotency
 
-    # Enriched during scoring:
+    # Legacy (v1) scoring — retired from the live path but kept so old
+    # blueprint_json rows still read. New code uses the v2 fields below.
     blueprint: Optional[BlueprintScore]
     thesis: Optional[str]
     price: Optional[float]
     market_cap: Optional[float]
     alerted: bool
+
+    # v2 evidence-first pipeline. All optional (total=False); each stage
+    # enriches the candidate in place. The *_dict fields hold model_dump() of
+    # the corresponding pydantic schema so they serialize cleanly to the DB.
+    cik: Optional[str]
+    event_family: Optional[str]   # "spinoff" | "carveout" | "unknown"
+    status: Optional[str]         # decision status mirror of tier
+    priority_for_me: Optional[float]  # 0..1 personal-attention overlay (ranking only)
+    source_doc_ids: List[str]     # source_documents linked to this candidate
+    event_signal: Optional[dict]
+    financial_snapshot: Optional[dict]
+    moat_proxy: Optional[dict]
+    valuation_gap: Optional[dict]
+    risk_flags: Optional[dict]
+    scorecard: Optional[dict]
+    memo: Optional[dict]
+    critic: Optional[dict]
 
 
 class AgentState(TypedDict):
@@ -64,7 +82,14 @@ class AgentState(TypedDict):
     """
 
     candidates: Annotated[List[Candidate], operator.add]
+    # The v2 linear chain. These are written by single (non-parallel) nodes, so
+    # they use last-writer-wins (NO reducer). Only the parallel-fan-out fields
+    # (candidates, errors) need operator.add.
+    normalized_candidates: List[Candidate]
+    classified_candidates: List[Candidate]
+    enriched_candidates: List[Candidate]
     scored_candidates: List[Candidate]
+    decided_candidates: List[Candidate]
     alert_queue: List[Candidate]
     run_timestamp: str
     errors: Annotated[List[str], operator.add]

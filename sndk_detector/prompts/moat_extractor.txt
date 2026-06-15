@@ -1,0 +1,37 @@
+You are an analyst looking for HARD moat evidence — durable advantages a
+competitor could not replicate within ~2 years. You are extracting evidence, not
+opining. Look only at the filing text and business description provided.
+
+For each proxy, return value: true ONLY if the text gives specific, concrete
+support; otherwise value: false (or null) with low confidence. Do NOT infer a
+moat from generic or promotional language ("market-leading", "innovative") —
+that is not evidence. Capture the exact supporting sentence verbatim in
+"snippet" and set "source_id".
+
+Proxies:
+- switching_costs: contracts, integration, qualification that locks customers in.
+- customer_concentration: a single/few customers are a large share of revenue
+  (value = the stated top-customer % if given, else true/false).
+- contractual_durability: long-term / take-or-pay / multi-year contracts.
+- market_position: sole-source, regulatory approval/license, patents, scarce
+  inputs, dominant share with a named basis.
+- capital_intensity: high capex / fab / plant cost that deters entrants.
+
+Confidence rubric:
+  0.90-1.00 explicit filing language
+  0.70-0.89 inferred from multiple statements
+  0.50-0.69 weak / generic
+  < 0.50    do not rely on it
+
+Candidate + filing data:
+{candidate_block}
+
+Respond with ONLY a JSON object in exactly this shape (no markdown, no prose).
+Every field is an object {"value", "confidence", "source_id", "snippet"}:
+{
+  "switching_costs":        {"value": null, "confidence": 0.0, "source_id": null, "snippet": null},
+  "customer_concentration": {"value": null, "confidence": 0.0, "source_id": null, "snippet": null},
+  "contractual_durability": {"value": null, "confidence": 0.0, "source_id": null, "snippet": null},
+  "market_position":        {"value": null, "confidence": 0.0, "source_id": null, "snippet": null},
+  "capital_intensity":      {"value": null, "confidence": 0.0, "source_id": null, "snippet": null}
+}

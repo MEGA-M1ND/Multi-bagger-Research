@@ -7,8 +7,10 @@ requires-python = ">=3.11"
 dependencies = [
     "langgraph>=0.2.40",
     "openai>=1.40.0",
+    "pydantic>=2.0",
     "python-dotenv>=1.0.1",
     "requests>=2.31.0",
+    "yfinance>=0.2.40",
 ]
 
 [project.scripts]
