@@ -1,0 +1,27 @@
+[project]
+name = "sndk-detector"
+version = "0.1.0"
+description = "Personal stock-screening agent: ingest from multiple sources, score against a fixed 6-point blueprint via an LLM, and alert on high-scoring matches."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.2.40",
+    "openai>=1.40.0",
+    "python-dotenv>=1.0.1",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+sndk-detector = "sndk_detector.main:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sndk_detector"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]

@@ -1,0 +1,26 @@
+# Secrets / local config
+.env
+
+# SQLite databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+
+# uv
+uv.lock
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
