@@ -1,121 +1,165 @@
-# Multi-bagger-Research
+# SNDK Detector Agent
 
-# Build: SNDK Detector Agent
+A personal, local-first stock-screening agent. It ingests candidates from
+multiple sources in parallel, scores each against a fixed **6-point blueprint**
+using an LLM, and sends a Telegram alert for high-scoring matches. Single-user,
+runs on a schedule, built for correctness and observability over scale.
 
-## Goal
-A personal stock-screening agent that ingests data from multiple sources, scores
-candidates against a fixed 6-point "blueprint" via an LLM, and sends alerts for
-high-scoring matches. Single-user, runs on a schedule, local-first. Prioritize
-correctness and observability over scale.
+```
+        ┌──────────────┐
+        │  dispatcher  │  (stamps run timestamp)
+        └──────┬───────┘
+               │  Send fan-out (parallel)
+   ┌───────────┼─────────────┐
+   ▼           ▼             ▼
+ingest_sec  ingest_news  ingest_screener
+   └───────────┼─────────────┘
+               ▼  (converge)
+            ┌───────┐
+            │ score │  async, semaphore-bounded LLM scoring
+            └───┬───┘
+                ▼
+            ┌───────┐
+            │ alert │  filter ≥ threshold & not-yet-alerted → Telegram
+            └───────┘
+```
 
-## Tech stack
-- Python 3.11+, LangGraph for orchestration
-- SQLite for persistence (via sqlite3 stdlib, no ORM)
-- OpenAI API for scoring (model configurable, default gpt-4o-mini for cost)
-- Telegram Bot API for alerts
-- python-dotenv for config
-- Use `uv` for dependency management
+## The 6-point blueprint
 
-## Architecture
-Three logical stages: ingestion (fan-out, parallel) → scoring → filter → alert.
+Each candidate is scored TRUE/FALSE on six factors (total 0–6):
 
-Use LangGraph's `Send` API for true parallel fan-out across ingestion sources.
-A dispatcher node should fan out to all enabled ingestion nodes simultaneously,
-then converge to the scoring node. Do NOT chain ingestion nodes linearly.
-
-## State schema (state.py)
-Implement these TypedDicts. Use `Annotated[List[Candidate], operator.add]` for
-fields that accumulate across parallel nodes.
-
-- BlueprintScore: six booleans (structural_event, cyclical_trough,
-  secular_tailwind, supply_constraint, undervalued_narrative, domain_edge),
-  total_score int, reasoning str
-- Candidate: ticker, company_name, market, source, raw_data, blueprint (optional),
-  thesis (optional), price (optional), market_cap (optional), alerted bool,
-  candidate_id (stable hash of ticker+source for dedup)
-- AgentState: candidates (accumulate), scored_candidates, alert_queue,
-  run_timestamp, errors (accumulate)
-
-## Ingestion nodes (nodes/)
-Each must be defensive: wrap network calls in try/except, append failures to
-`errors`, never crash the graph. Cap results per source (default 20).
-
-1. ingest_sec.py — SEC EDGAR full-text search. Use the correct endpoint:
-   `https://efts.sec.gov/LATEST/search-index?q="spin-off"&forms=8-K,S-1,10-12B`
-   Set a real User-Agent header (SEC requires it). VERIFY the response JSON shape
-   by making one real call and inspecting it before writing the parser — do not
-   assume field names. Respect SEC's 10 req/sec rate limit.
-2. ingest_news.py — stub with a clean interface (a function that returns
-   list[Candidate]). Leave a TODO for the actual news source. Don't fake data.
-3. ingest_screener.py — stub for India stocks, same pattern.
-
-Build SEC fully; news and screener as honest stubs I can fill in.
-
-## Scoring node (nodes/score_blueprint.py)
-- Batch concerns: candidates may number 40+. Process with a concurrency limit
-  (asyncio + semaphore, max 5 concurrent LLM calls) and add retry-with-backoff
-  on rate-limit errors. Do NOT call the LLM sequentially in a plain loop.
-- Two prompts loaded from prompts/ as text files: blueprint_scorer and
-  thesis_generator. Use response_format json_object for scoring.
-- Only generate a thesis when total_score >= BLUEPRINT_THRESHOLD.
-- Dedup against the DB before scoring — skip candidates already scored recently
-  (configurable lookback, default 7 days) to avoid burning tokens.
-
-## Persistence (db.py)
-SQLite with tables: candidates (with scores, JSON blueprint, timestamps) and
-alerts (what was sent, when). Functions: init_db, upsert_candidate,
-get_recent_candidate_ids, mark_as_alerted, has_been_alerted. Use candidate_id
-for idempotency.
-
-## Alert node (nodes/alert.py)
-- Filter: only alert candidates that scored >= threshold AND haven't been
-  alerted (check DB). 
-- Telegram with Markdown. Handle the send failure case gracefully.
-- After successful send, mark_as_alerted in DB.
-
-## Config (config.py)
-Load from .env: OPENAI_API_KEY, OPENAI_MODEL, TELEGRAM_BOT_TOKEN,
-TELEGRAM_CHAT_ID, BLUEPRINT_THRESHOLD (default 4), DEDUP_LOOKBACK_DAYS (default 7),
-MAX_CANDIDATES_PER_SOURCE (default 20), MAX_CONCURRENT_LLM (default 5).
-Validate required keys are present at startup; fail loudly if missing.
-
-## Entry point (main.py)
-- CLI with argparse: `--once` (single run) and `--schedule` (loop every N hours,
-  default 6, using a simple sleep loop — no cron dependency).
-- Print a clear run summary: sources hit, candidates found, scored, alerted, errors.
-- init_db on startup.
-
-## Prompts (prompts/)
-Create blueprint_scorer.txt and thesis_generator.txt. I'll provide the scoring
-criteria below — embed them verbatim into the scorer prompt.
-
-[BLUEPRINT CRITERIA — the 6 factors]
-1. STRUCTURAL_EVENT: recent/upcoming spinoff, carve-out, IPO, restructuring, or
-   management change that could re-rate the company.
-2. CYCLICAL_TROUGH: at/near multi-year low in margins, pricing, or sentiment with
-   suppressed earnings that could recover sharply.
-3. SECULAR_TAILWIND: a direct bottleneck or critical must-have supplier in AI,
-   robotics, nuclear/SMR, defense AI, or quantum — not peripheral.
-4. SUPPLY_CONSTRAINT: genuine constraint competitors can't replicate in <2 years
-   (patents, capital intensity, regulatory moats, rare materials, specialized talent).
-5. UNDERVALUED_NARRATIVE: market valuation doesn't yet reflect the secular growth
-   story; trading like a legacy/cyclical business.
-6. DOMAIN_EDGE: someone with AI infrastructure/security expertise would understand
+1. **Structural event** — spinoff, carve-out, IPO, restructuring, or management
+   change that could re-rate the company.
+2. **Cyclical trough** — at/near a multi-year low in margins/pricing/sentiment
+   with suppressed earnings that could recover sharply.
+3. **Secular tailwind** — a direct bottleneck or must-have supplier in AI,
+   robotics, nuclear/SMR, defense AI, or quantum (not peripheral).
+4. **Supply constraint** — a moat competitors can't replicate in < 2 years
+   (patents, capital intensity, regulatory moats, rare materials, talent).
+5. **Undervalued narrative** — valuation doesn't yet reflect the growth story;
+   trades like a legacy/cyclical business.
+6. **Domain edge** — someone with AI infra/security expertise would understand
    the technical moat better than the average investor.
 
-## Build order
-1. Scaffold structure, requirements, .env.example, README
-2. state.py, config.py, db.py (with a quick test that init_db works)
-3. ingest_sec.py — make ONE real SEC call, inspect the JSON, THEN write the parser
-4. score_blueprint.py with the async/concurrency handling
-5. alert.py
-6. graph.py wiring with Send-based fan-out
-7. main.py
-8. End-to-end dry run with --once; show me the output
+A candidate that scores **≥ `BLUEPRINT_THRESHOLD`** (default 4) gets an
+LLM-generated thesis and a Telegram alert.
 
-## Constraints
-- Don't invent API response shapes — verify with a real call or tell me you can't
-  reach it and need me to paste a sample.
-- Comment the non-obvious parts (the Send fan-out, the async semaphore).
-- Keep it readable. This is a personal tool I'll be extending.
-Multi-bagger Research
+## Tech stack
+
+- **Python 3.11+**, **LangGraph** for orchestration (parallel fan-out via `Send`)
+- **SQLite** (stdlib `sqlite3`, no ORM) for persistence + idempotency
+- **OpenAI API** for scoring (`OPENAI_MODEL`, default `gpt-4o-mini`)
+- **Telegram Bot API** for alerts
+- **uv** for dependency management
+
+## Setup
+
+```bash
+# 1. Install dependencies into a managed venv
+uv sync
+
+# 2. Configure
+cp .env.example .env
+# edit .env: OPENAI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID are required.
+# IMPORTANT: set a real SEC_USER_AGENT with your contact info — SEC returns 403
+# without a descriptive User-Agent.
+```
+
+Required keys (validated loudly at startup): `OPENAI_API_KEY`,
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. Everything else has sane defaults — see
+`.env.example`.
+
+## Usage
+
+```bash
+# Single run
+uv run python -m sndk_detector.main --once
+
+# Scheduled loop (every 6h by default; no cron dependency)
+uv run python -m sndk_detector.main --schedule
+uv run python -m sndk_detector.main --schedule --interval 3   # every 3h
+
+# Verbose logging
+uv run python -m sndk_detector.main --once -v
+```
+
+If installed as a script (`uv pip install -e .`), the `sndk-detector` command is
+also available.
+
+Each run prints a summary: candidates per source, how many were scored, how many
+alerted, and every error encountered (sources never crash the run — failures are
+collected and reported).
+
+## Project layout
+
+```
+sndk_detector/
+├── state.py              # TypedDicts + reducers (Annotated[..., operator.add])
+├── config.py             # .env loading + loud validation
+├── db.py                 # SQLite: candidates + alerts, idempotent by candidate_id
+├── graph.py              # LangGraph wiring + Send-based parallel fan-out
+├── main.py               # CLI (--once / --schedule), run summary
+├── nodes/
+│   ├── ingest_sec.py     # SEC EDGAR full-text search (fully implemented)
+│   ├── ingest_news.py    # STUB — clean interface, fill in your news source
+│   ├── ingest_screener.py# STUB — clean interface, fill in your India screener
+│   ├── score_blueprint.py# async scoring, semaphore + retry/backoff, dedup
+│   └── alert.py          # filter + Telegram send + mark_as_alerted
+└── prompts/
+    ├── blueprint_scorer.txt   # 6-factor criteria, JSON output
+    └── thesis_generator.txt   # thesis for candidates over threshold
+tests/                    # db, state, and SEC-parser tests
+```
+
+## Design notes
+
+- **Parallel fan-out.** `graph.py` uses LangGraph's `Send` API: the dispatcher's
+  conditional edge returns a *list* of `Send` objects (one per source) so all
+  ingestion runs concurrently in one superstep, then converges on scoring. The
+  `candidates`/`errors` state fields use `operator.add` reducers so parallel
+  branches concatenate instead of overwriting.
+- **Token discipline.** Scoring dedups against the DB first (skips anything
+  scored within `DEDUP_LOOKBACK_DAYS`), bounds concurrency with an `asyncio`
+  semaphore (`MAX_CONCURRENT_LLM`), retries rate-limits with exponential backoff,
+  and only generates a (second, costlier) thesis call for candidates over the
+  threshold.
+- **Idempotency.** Every candidate has a stable `candidate_id` (hash of
+  ticker+source). Upserts, dedup, and alert-suppression all key off it; a failed
+  Telegram send is *not* marked alerted, so it retries next run without
+  double-alerting.
+- **Defensive ingestion.** Every network call is wrapped in try/except; failures
+  append to `errors` and never crash the graph.
+
+## ⚠️ SEC parser note (read this)
+
+The build spec asked for one live SEC call to verify the JSON shape before
+writing the parser. **In the environment where this was built, the SEC hosts
+(`efts.sec.gov`, `data.sec.gov`) were blocked by a network egress allowlist**, so
+the live call returned `403 — Host not in allowlist`.
+
+The parser in `ingest_sec.py` is therefore written against the **documented,
+stable** EDGAR full-text search shape (`hits.hits[]._source` with
+`display_names`, `ciks`, `form`, `file_date`, …). It is fully defensive and
+includes a shape-guard that surfaces a loud error if the live response doesn't
+match. Tests in `tests/test_ingest_sec.py` validate the parser against a
+documented-shape fixture.
+
+**When you run this with SEC reachable:** if you see
+`unexpected SEC response shape` in the run errors, paste a real sample response
+and adjust `_extract_candidate` — it's the only function that needs to change.
+
+## Extending
+
+- **Add an ingestion source:** copy a stub in `nodes/`, implement
+  `fetch_*_candidates(config) -> (list[Candidate], list[str])` and a
+  `make_*_node(config)` factory, then add the node name to `INGESTION_NODES` in
+  `graph.py`. It's automatically included in the parallel fan-out.
+- **Fill in the stubs:** `ingest_news.py` and `ingest_screener.py` have clean
+  interfaces and TODO sketches. They currently return no candidates (and an
+  honest note) rather than fabricating data.
+
+## Tests
+
+```bash
+uv run pytest -q
+```

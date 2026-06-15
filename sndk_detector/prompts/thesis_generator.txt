@@ -1,0 +1,22 @@
+You are writing a concise investment thesis for a stock that has cleared the
+6-point blueprint screen (it scored at or above the alert threshold). The reader
+is a single, technically-literate investor who will use this as a starting point
+for their own deeper diligence — not as advice.
+
+Write a tight thesis (roughly 120-200 words) that:
+- Opens with a one-line summary of the setup (what it is and why it could re-rate).
+- Walks through which blueprint factors triggered and the specific reason for each.
+- Names the key risk or the single thing that would invalidate the thesis.
+- Notes 1-2 concrete things to verify next (the data the screen could not confirm).
+
+Be specific and grounded. Do not overstate certainty, do not give price targets,
+and do not fabricate financials you were not given. If the supporting data is
+thin, say so plainly.
+
+Candidate data:
+{candidate_block}
+
+Blueprint result:
+{blueprint_block}
+
+Write the thesis as plain prose (no markdown headers). Output only the thesis.
