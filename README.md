@@ -1,9 +1,10 @@
 # SNDK Detector Agent
 
 A personal, local-first stock-screening agent. It ingests candidates from
-multiple sources in parallel, scores each against a fixed **6-point blueprint**
-using an LLM, and sends a Telegram alert for high-scoring matches. Single-user,
-runs on a schedule, built for correctness and observability over scale.
+multiple sources in parallel, grounds each with real financial data + cited
+research, scores them against a fixed **6-point blueprint** using an LLM, and
+sends a Telegram alert for high-scoring matches. Single-user, runs on a
+schedule, built for correctness and observability over scale.
 
 ```
         ┌──────────────┐
@@ -15,6 +16,10 @@ runs on a schedule, built for correctness and observability over scale.
 ingest_sec  ingest_news  ingest_screener
    └───────────┼─────────────┘
                ▼  (converge)
+            ┌────────┐
+            │ enrich │  Perplexity: structured financials + cited research
+            └───┬────┘  (no-op without PERPLEXITY_API_KEY)
+                ▼
             ┌───────┐
             │ score │  async, semaphore-bounded LLM scoring
             └───┬───┘
@@ -49,6 +54,9 @@ LLM-generated thesis and a Telegram alert.
 - **Python 3.11+**, **LangGraph** for orchestration (parallel fan-out via `Send`)
 - **SQLite** (stdlib `sqlite3`, no ORM) for persistence + idempotency
 - **OpenAI API** for scoring (`OPENAI_MODEL`, default `gpt-4o-mini`)
+- **Perplexity API** (optional) for enrichment — structured financials + cited
+  research (`PERPLEXITY_MODEL`, default `sonar`); OpenAI-compatible, so it reuses
+  the same SDK
 - **Telegram Bot API** for alerts
 - **uv** for dependency management
 
@@ -103,12 +111,15 @@ sndk_detector/
 │   ├── ingest_sec.py     # SEC EDGAR full-text search (fully implemented)
 │   ├── ingest_news.py    # STUB — clean interface, fill in your news source
 │   ├── ingest_screener.py# STUB — clean interface, fill in your India screener
+│   ├── enrich.py         # Perplexity grounding: financials + cited research
 │   ├── score_blueprint.py# async scoring, semaphore + retry/backoff, dedup
 │   └── alert.py          # filter + Telegram send + mark_as_alerted
 └── prompts/
     ├── blueprint_scorer.txt   # 6-factor criteria, JSON output
+    ├── enrich_financials.txt  # structured-financials extraction (JSON)
+    ├── enrich_research.txt     # grounded qualitative research
     └── thesis_generator.txt   # thesis for candidates over threshold
-tests/                    # db, state, and SEC-parser tests
+tests/                    # db, state, SEC-parser, and enrich-parser tests
 ```
 
 ## Design notes
@@ -123,6 +134,16 @@ tests/                    # db, state, and SEC-parser tests
   semaphore (`MAX_CONCURRENT_LLM`), retries rate-limits with exponential backoff,
   and only generates a (second, costlier) thesis call for candidates over the
   threshold.
+- **Enrichment before scoring.** Four of the six factors need *current,
+  company-specific facts* the model can't reliably know. The `enrich` node
+  grounds each post-dedup candidate with Perplexity: a structured-JSON financials
+  call (price, market cap, margins, valuation multiples, dated corporate events —
+  stored as *numbers*, not prose, so the number-driven factors stay deterministic
+  and citable) plus a grounded, cited research summary for the qualitative
+  factors. The data lands in `raw_data` (which the scorer already serializes), so
+  no scorer rewrite is needed. It's a no-op without `PERPLEXITY_API_KEY`, dedups
+  on `last_enriched` within `RESEARCH_LOOKBACK_DAYS`, and is capped per run by
+  `MAX_ENRICH_PER_RUN`.
 - **Idempotency.** Every candidate has a stable `candidate_id` (hash of
   ticker+source). Upserts, dedup, and alert-suppression all key off it; a failed
   Telegram send is *not* marked alerted, so it retries next run without
@@ -147,6 +168,24 @@ documented-shape fixture.
 **When you run this with SEC reachable:** if you see
 `unexpected SEC response shape` in the run errors, paste a real sample response
 and adjust `_extract_candidate` — it's the only function that needs to change.
+
+## ⚠️ Perplexity enrichment note (read this)
+
+Same story as SEC: `api.perplexity.ai` was blocked by the egress allowlist in the
+build environment, so the one live `finance_search` call to verify its response
+shape returned `403`. `nodes/enrich.py` is therefore written against Perplexity's
+**documented, OpenAI-compatible** `/chat/completions` endpoint — it asks the
+model (with its built-in web/finance grounding) to return a JSON object in *our*
+schema plus citations. All request shaping and response parsing
+(`_parse_financials`, `_apply_financials`, `_extract_citations`) are isolated so
+that, once egress is opened and the live `finance_search` structured shape is
+confirmed, only those spots need editing. Everything is defensive: missing fields
+degrade to absent and never crash the graph.
+
+**To enable it:** add `api.perplexity.ai` to your egress allowlist, set
+`PERPLEXITY_API_KEY` in `.env`, then run. India fundamentals coverage is
+unverified — missing fields simply don't appear in `raw_data` (the scorer already
+tolerates sparse data).
 
 ## Extending
 

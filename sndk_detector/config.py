@@ -37,6 +37,11 @@ class Config:
     max_concurrent_llm: int
     db_path: str
     sec_user_agent: str
+    # Perplexity enrichment (optional — empty key disables the enrich stage).
+    perplexity_api_key: str
+    perplexity_model: str
+    research_lookback_days: int
+    max_enrich_per_run: int
 
 
 def _get_int(name: str, default: int) -> int:
@@ -80,4 +85,8 @@ def load_config() -> Config:
         sec_user_agent=(
             os.getenv("SEC_USER_AGENT") or "SNDK Detector contact@example.com"
         ).strip(),
+        perplexity_api_key=(os.getenv("PERPLEXITY_API_KEY") or "").strip(),
+        perplexity_model=(os.getenv("PERPLEXITY_MODEL") or "sonar").strip(),
+        research_lookback_days=_get_int("RESEARCH_LOOKBACK_DAYS", 7),
+        max_enrich_per_run=_get_int("MAX_ENRICH_PER_RUN", 20),
     )

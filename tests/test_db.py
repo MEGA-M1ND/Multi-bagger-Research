@@ -7,6 +7,7 @@ import pytest
 
 from sndk_detector.db import (
     get_recent_candidate_ids,
+    get_recently_enriched_ids,
     has_been_alerted,
     init_db,
     mark_as_alerted,
@@ -55,6 +56,26 @@ def test_upsert_and_dedup_only_counts_scored(db_path):
     )
     upsert_candidate(db_path, cand)
     assert get_recent_candidate_ids(db_path, 7) == {cand["candidate_id"]}
+
+
+def test_enrichment_stamps_last_enriched(db_path):
+    init_db(db_path)
+    cand = new_candidate("ACME", "Acme Corp", "US", "sec_edgar")
+
+    # A bare candidate is not "recently enriched".
+    upsert_candidate(db_path, cand)
+    assert get_recently_enriched_ids(db_path, 7) == set()
+
+    # Attaching enrichment data (fundamentals/research) stamps last_enriched.
+    cand["raw_data"] = {
+        "fundamentals": {"pe_ratio": 12.3, "margin_trend": "near multi-year low"},
+        "research": {"summary": "grounded note", "citations": ["http://x"]},
+    }
+    cand["price"] = 42.0
+    upsert_candidate(db_path, cand)
+    assert get_recently_enriched_ids(db_path, 7) == {cand["candidate_id"]}
+    # Enrichment must not falsely count as "scored".
+    assert get_recent_candidate_ids(db_path, 7) == set()
 
 
 def test_alert_idempotency(db_path):

@@ -55,6 +55,14 @@ def _print_summary(state: AgentState) -> None:
     for cand in candidates:
         by_source[cand.get("source", "?")] = by_source.get(cand.get("source", "?"), 0) + 1
 
+    # How many candidates carry Perplexity enrichment (fundamentals or research).
+    enriched = sum(
+        1
+        for cand in candidates
+        if (cand.get("raw_data") or {}).get("fundamentals")
+        or (cand.get("raw_data") or {}).get("research")
+    )
+
     print("\n" + "=" * 60)
     print("SNDK DETECTOR — RUN SUMMARY")
     print("=" * 60)
@@ -63,6 +71,7 @@ def _print_summary(state: AgentState) -> None:
     if by_source:
         for source, count in sorted(by_source.items()):
             print(f"                - {source}: {count}")
+    print(f"Enriched      : {enriched} (Perplexity financials/research)")
     print(f"Scored        : {len(scored)} (newly scored this run)")
     print(f"Alerted       : {len(alerted)}")
 

@@ -10,6 +10,15 @@ FALSE — be skeptical, not generous. Do not invent facts that are not supported
 by the candidate data; reason from what you are given plus widely-known, stable
 background knowledge about the company and its industry.
 
+When present, prefer the grounded enrichment fields over background knowledge:
+- `raw_data.fundamentals` (structured numbers: margins, valuation multiples,
+  revenue/earnings trend) is your primary evidence for CYCLICAL_TROUGH and
+  UNDERVALUED_NARRATIVE — cite specific figures in your reasoning.
+- `raw_data.corporate_events` informs STRUCTURAL_EVENT.
+- `raw_data.research.summary` is cited, current narrative for SECULAR_TAILWIND,
+  SUPPLY_CONSTRAINT, and DOMAIN_EDGE; ground TRUE calls in it rather than
+  speculation. Treat these fields as more reliable than your training memory.
+
 [BLUEPRINT CRITERIA — the 6 factors]
 1. STRUCTURAL_EVENT: recent/upcoming spinoff, carve-out, IPO, restructuring, or
    management change that could re-rate the company.

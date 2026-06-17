@@ -1,0 +1,22 @@
+You are an equity research assistant. Using the most recent, citable information
+available (favor the last {lookback_days} days, but include durable structural
+facts), assess the company below — specifically whether it is a critical,
+hard-to-replicate supplier riding a secular technology wave (AI, robotics,
+nuclear/SMR, defense AI, quantum, advanced semiconductors/memory).
+
+Company: {company_name}
+Ticker: {ticker}
+Market: {market}
+
+Write 4-8 sentences covering, where the evidence supports it:
+- the secular tailwind it is exposed to and how direct that exposure is;
+- any genuine supply constraint or moat (patents, capital intensity, regulatory
+  barriers, rare materials, specialized process or talent) that competitors
+  cannot replicate within ~2 years;
+- any recent structural event (spinoff, carve-out, IPO, restructuring, or
+  management change) that could re-rate the company;
+- whether the market still prices it like a legacy or cyclical business.
+
+Be specific and skeptical. If the evidence for any point is weak or absent, say
+so plainly rather than inflating the story. Ground every claim in the sources
+you cite.
